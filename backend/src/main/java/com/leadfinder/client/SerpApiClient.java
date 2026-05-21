@@ -91,20 +91,42 @@ public class SerpApiClient {
         if (title == null) {
             return null;
         }
-        // Split by common separators: |, -, – (en dash)
         String[] segments = title.split("[|\\-\u2013]");
-        if (segments.length > 1) {
-            String candidateCompany = segments[1].trim();
-            if (!candidateCompany.toLowerCase().contains("linkedin")) {
-                return candidateCompany;
+        for (int i = 1; i < segments.length; i++) {
+            String candidateCompany = segments[i].trim();
+            if (candidateCompany.isEmpty()) {
+                continue;
             }
-        }
-        if (segments.length > 2) {
-             String candidateCompany = segments[2].trim();
-             if (!candidateCompany.toLowerCase().contains("linkedin")) {
-                 return candidateCompany;
-             }
+            String normalized = candidateCompany.toLowerCase();
+            if (normalized.contains("linkedin") || !isLikelyCompany(candidateCompany)) {
+                continue;
+            }
+            return candidateCompany;
         }
         return null;
+    }
+
+    private boolean isLikelyCompany(String segment) {
+        if (segment == null || segment.isBlank()) {
+            return false;
+        }
+        String lower = segment.toLowerCase();
+        if (lower.contains("linkedin") || lower.contains(" at ") || lower.contains("student") || lower.contains("intern")) {
+            return false;
+        }
+        if (lower.contains(",")) {
+            return false;
+        }
+        String[] roleKeywords = {
+                "developer", "engineer", "designer", "manager", "consultant", "director", "founder",
+                "owner", "lead", "analyst", "architect", "president", "chief", "cto", "ceo", "cfo", "coo",
+                "vp", "vice", "principal", "teacher", "speaker", "coach", "freelance", "contractor"
+        };
+        for (String keyword : roleKeywords) {
+            if (lower.contains(keyword)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

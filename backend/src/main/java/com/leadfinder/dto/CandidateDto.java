@@ -11,6 +11,12 @@ public class CandidateDto {
     private String headline;
     private String summary;
     private String location;
+    private String email;
+    private String phone;
+    private String companyWebsite;
+    private String personalWebsite;
+    private String socialProfileUrl;
+    private String bio;
 
     public CandidateDto() {
     }
@@ -93,5 +99,53 @@ public class CandidateDto {
 
     public void setLocation(String location) {
         this.location = location;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public String getPhone() {
+        return phone;
+    }
+
+    public void setPhone(String phone) {
+        this.phone = phone;
+    }
+
+    public String getCompanyWebsite() {
+        return companyWebsite;
+    }
+
+    public void setCompanyWebsite(String companyWebsite) {
+        this.companyWebsite = companyWebsite;
+    }
+
+    public String getPersonalWebsite() {
+        return personalWebsite;
+    }
+
+    public void setPersonalWebsite(String personalWebsite) {
+        this.personalWebsite = personalWebsite;
+    }
+
+    public String getSocialProfileUrl() {
+        return socialProfileUrl;
+    }
+
+    public void setSocialProfileUrl(String socialProfileUrl) {
+        this.socialProfileUrl = socialProfileUrl;
+    }
+
+    public String getBio() {
+        return bio;
+    }
+
+    public void setBio(String bio) {
+        this.bio = bio;
     }
 }

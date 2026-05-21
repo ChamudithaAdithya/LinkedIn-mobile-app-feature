@@ -1,6 +1,7 @@
 com\leadfinder\util\SearchQueryBuilder.class
 com\leadfinder\dto\SearchRequest.class
 com\leadfinder\controller\SelectionController.class
+com\leadfinder\client\ProxycurlClient.class
 com\leadfinder\model\Lead.class
 com\leadfinder\dto\SearchResponse.class
 com\leadfinder\client\SerpApiClient.class
@@ -13,3 +14,4 @@ com\leadfinder\util\ScoreUtil.class
 com\leadfinder\dto\SelectRequest.class
 com\leadfinder\controller\SearchController.class
 com\leadfinder\LeadFinderApplication.class
+com\leadfinder\config\ProxycurlConfig.class

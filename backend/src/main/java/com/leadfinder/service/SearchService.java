@@ -51,9 +51,14 @@ public class SearchService {
         List<CandidateDto> candidates = new ArrayList<>(candidateMap.values());
 
         // Enrich and Score
-        int enrichmentLimit = Math.min(candidates.size(), 3);
+        int enrichmentLimit = Math.min(candidates.size(), 5);
         for (int i = 0; i < enrichmentLimit; i++) {
-            proxycurlClient.enrichCandidate(candidates.get(i));
+            String msg = proxycurlClient.enrichCandidate(candidates.get(i));
+            // Log enrichment messages for visibility during search
+            if (msg != null && !msg.isBlank()) {
+                // Using SLF4J via ProxycurlClient logger; keep lightweight here
+                System.out.println("Enrichment: " + msg + " for " + candidates.get(i).getLinkedinUrl());
+            }
         }
 
         candidates.forEach(candidate -> {
