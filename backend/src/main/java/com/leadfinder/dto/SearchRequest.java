@@ -15,7 +15,7 @@ public class SearchRequest {
 
     public SearchRequest(String name, String company, String title) {
         this.name = name;
-        this.company = company;
+        this.company = company;  
         this.title = title;
     }
 
