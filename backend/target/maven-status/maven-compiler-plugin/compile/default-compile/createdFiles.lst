@@ -8,6 +8,7 @@ com\leadfinder\client\SerpApiClient.class
 com\leadfinder\config\SerpApiConfig.class
 com\leadfinder\dto\SelectResponse.class
 com\leadfinder\repository\LeadRepository.class
+com\leadfinder\config\RetryConfig.class
 com\leadfinder\dto\CandidateDto.class
 com\leadfinder\service\SearchService.class
 com\leadfinder\util\ScoreUtil.class

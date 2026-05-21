@@ -7,6 +7,7 @@ E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\cont
 E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\client\ProxycurlClient.java
 E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\controller\SearchController.java
 E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\util\ScoreUtil.java
+E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\config\RetryConfig.java
 E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\dto\SelectRequest.java
 E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\dto\SelectResponse.java
 E:\DevMyX\Flutter P\Linkedin Scrapping\backend\src\main\java\com\leadfinder\dto\CandidateDto.java

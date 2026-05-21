@@ -1,6 +1,5 @@
 package com.leadfinder.service;
 
-import com.leadfinder.client.ProxycurlClient;
 import com.leadfinder.client.SerpApiClient;
 import com.leadfinder.dto.CandidateDto;
 import com.leadfinder.dto.SearchRequest;
@@ -18,11 +17,11 @@ import java.util.Map;
 public class SearchService {
 
     private final SerpApiClient serpApiClient;
-    private final ProxycurlClient proxycurlClient;
 
-    public SearchService(SerpApiClient serpApiClient, ProxycurlClient proxycurlClient) {
+    // ProxycurlClient is removed from this service entirely 
+    // to prevent synchronous bottlenecks during the search phase.
+    public SearchService(SerpApiClient serpApiClient) {
         this.serpApiClient = serpApiClient;
-        this.proxycurlClient = proxycurlClient;
     }
 
     public SearchResponse searchCandidates(SearchRequest request) {
@@ -32,7 +31,6 @@ public class SearchService {
                 request.getTitle()
         );
 
-        // Using a Map to de-duplicate results by LinkedIn URL while preserving order of discovery
         Map<String, CandidateDto> candidateMap = new LinkedHashMap<>();
 
         for (String query : queries) {
@@ -42,7 +40,6 @@ public class SearchService {
                     candidateMap.put(candidate.getLinkedinUrl(), candidate);
                 }
             }
-            // If we already have a good number of candidates from the strongest queries, we can stop
             if (candidateMap.size() >= 10) {
                 break;
             }
@@ -50,17 +47,7 @@ public class SearchService {
 
         List<CandidateDto> candidates = new ArrayList<>(candidateMap.values());
 
-        // Enrich and Score
-        int enrichmentLimit = Math.min(candidates.size(), 5);
-        for (int i = 0; i < enrichmentLimit; i++) {
-            String msg = proxycurlClient.enrichCandidate(candidates.get(i));
-            // Log enrichment messages for visibility during search
-            if (msg != null && !msg.isBlank()) {
-                // Using SLF4J via ProxycurlClient logger; keep lightweight here
-                System.out.println("Enrichment: " + msg + " for " + candidates.get(i).getLinkedinUrl());
-            }
-        }
-
+        // Score based on SerpAPI preview text only
         candidates.forEach(candidate -> {
             int confidence = ScoreUtil.computeConfidence(
                     request.getName(),

@@ -10,7 +10,13 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -20,33 +26,36 @@ import java.net.URISyntaxException;
 
 @Component
 public class ProxycurlClient {
-
+    
     private static final Logger LOGGER = LoggerFactory.getLogger(ProxycurlClient.class);
     private static final int MAX_ERROR_BODY_LOG_LENGTH = 1000;
     private final RestTemplate restTemplate;
     private final ProxycurlConfig proxycurlConfig;
     private final String apiUrl;
     private final String fallbackApiUrl;
-
+    
     @Autowired
     public ProxycurlClient(ProxycurlConfig proxycurlConfig) {
-        this(proxycurlConfig, new RestTemplate());
-    }
-
-    // Constructor for testing/injection
-    public ProxycurlClient(ProxycurlConfig proxycurlConfig, RestTemplate restTemplate) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(10000); 
+        requestFactory.setReadTimeout(30000); 
+        
         this.proxycurlConfig = proxycurlConfig;
         this.apiUrl = proxycurlConfig.getApiUrl();
         this.fallbackApiUrl = proxycurlConfig.getFallbackApiUrl();
-        this.restTemplate = restTemplate == null ? new RestTemplate() : restTemplate;
+        this.restTemplate = new RestTemplate(requestFactory);
     }
 
+    // Retries network timeouts and 5xx errors automatically
+    @Retryable(
+            retryFor = {HttpServerErrorException.class, ResourceAccessException.class},
+            maxAttempts = 3,
+            backoff = @Backoff(delay = 2000, multiplier = 1.5)
+    )
     public String enrichCandidate(CandidateDto candidate) {
         String apiKey = proxycurlConfig.getApiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            String msg = "Proxycurl API key not configured; skipping enrichment";
-            LOGGER.debug("{} for {}", msg, candidate.getLinkedinUrl());
-            return msg;
+            return "Proxycurl API key not configured; skipping enrichment";
         }
 
         try {
@@ -55,32 +64,40 @@ public class ProxycurlClient {
                 return ok ? "Enriched with legacy Proxycurl endpoint" : "Proxycurl enrichment returned no data";
             } else {
                 boolean ok = enrichWithNinjaPear(candidate, apiKey);
-                if (ok) {
-                    return "Enriched with NinjaPear";
-                }
-                // Try fallback provider if configured
+                if (ok) return "Enriched with NinjaPear";
+                
                 if (fallbackApiUrl != null && !fallbackApiUrl.isBlank()) {
                     String url = UriComponentsBuilder.fromHttpUrl(fallbackApiUrl)
                             .queryParam("linkedin_url", candidate.getLinkedinUrl())
                             .queryParam("use_cache", "if-present")
-                            .build()
-                            .toUriString();
+                            .build().toUriString();
                     boolean ok2 = enrichCandidateFromUrl(candidate, apiKey, url, null);
-                    return ok2 ? "Enriched with fallback provider" : "NinjaPear enrichment did not return details; fallback returned no data";
+                    return ok2 ? "Enriched with fallback provider" : "Fallback returned no data";
                 }
                 return "NinjaPear enrichment did not return details";
             }
+        } catch (HttpClientErrorException.TooManyRequests e) {
+            String msg = "Enrichment API Rate Limit Exceeded (HTTP 429). Please wait before enriching more contacts.";
+            LOGGER.error(msg);
+            return msg;
         } catch (RestClientResponseException e) {
             String msg = String.format("Failed to enrich candidate from Proxycurl: status=%d response=%s", e.getRawStatusCode(), getSafeResponseBody(e));
             LOGGER.error(msg, e);
+            // Re-throw 5xx errors so Spring Retry catches them
+            if (e.getStatusCode().is5xxServerError()) {
+                throw new HttpServerErrorException(e.getStatusCode(), e.getStatusText(), e.getResponseHeaders(), e.getResponseBodyAsByteArray(), null);
+            }
             return msg;
+        } catch (ResourceAccessException e) {
+            LOGGER.error("Network timeout connecting to Enrichment API", e);
+            throw e; // Triggers @Retryable
         } catch (Exception e) {
             String msg = "Failed to enrich candidate from Proxycurl: " + e.getMessage();
             LOGGER.error(msg, e);
             return msg;
         }
     }
-
+    
     private boolean isLegacyProxycurlUrl() {
         return apiUrl != null && apiUrl.contains("/proxycurl/");
     }
@@ -121,11 +138,12 @@ public class ProxycurlClient {
     }
 
     private boolean enrichWithNinjaPear(CandidateDto candidate, String apiKey) {
-        String firstName = getFirstName(candidate.getName());
-        String lastName = getLastName(candidate.getName());
-        String company = candidate.getCompany();
+        String normalizedName = normalizeMissingValue(candidate.getName());
+        String firstName = getFirstName(normalizedName);
+        String lastName = getLastName(normalizedName);
+        String company = normalizeMissingValue(candidate.getCompany());
 
-        LOGGER.debug("Starting NinjaPear enrichment for candidate: name='{}', firstName='{}', company='{}'", candidate.getName(), firstName, company);
+        LOGGER.debug("Starting NinjaPear enrichment for candidate: name='{}', firstName='{}', company='{}'", normalizedName, firstName, company);
 
         if (firstName == null || firstName.isBlank()) {
             LOGGER.debug("Insufficient data to enrich candidate; name='{}'", candidate.getName());
@@ -375,7 +393,23 @@ public class ProxycurlClient {
         }
     }
 
+    private String normalizeMissingValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+        String lower = trimmed.toLowerCase();
+        if (lower.equals("null") || lower.equals("none") || lower.equals("unknown") || lower.equals("n/a")) {
+            return null;
+        }
+        return trimmed;
+    }
+
     private String getFirstName(String fullName) {
+        fullName = normalizeMissingValue(fullName);
         if (fullName == null || fullName.isBlank()) {
             return null;
         }
@@ -384,6 +418,7 @@ public class ProxycurlClient {
     }
 
     private String getLastName(String fullName) {
+        fullName = normalizeMissingValue(fullName);
         if (fullName == null || fullName.isBlank()) {
             return null;
         }
