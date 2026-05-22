@@ -189,7 +189,7 @@ public class ProxycurlClient {
 
     private boolean populateProfileDetails(CandidateDto candidate, String workEmail, String apiKey) {
         String url = UriComponentsBuilder.fromHttpUrl(getApiHost())
-                .path("/api/v1/person/profile")
+                .path("/api/v1/employee/profile")
                 .queryParam("work_email", workEmail)
                 .queryParam("use_cache", "if-present")
                 .build()
