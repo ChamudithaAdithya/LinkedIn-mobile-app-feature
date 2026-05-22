@@ -109,12 +109,25 @@ public class SerpApiClient {
     }
 
     private boolean isLikelyCompany(String segment) {
-        if (segment == null || segment.isBlank()) return false;
+        if (segment == null || segment.isBlank()) {
+            return false;
+        }
+
         String lower = segment.toLowerCase();
-        if (lower.contains("linkedin") || lower.contains(" at ") || lower.contains("student") || lower.contains("intern") || lower.contains(",")) return false;
-        String[] roleKeywords = {"developer", "engineer", "designer", "manager", "consultant", "director", "founder", "owner", "lead", "analyst", "architect", "president", "chief", "cto", "ceo", "cfo", "coo", "vp", "vice", "principal", "teacher", "speaker", "coach", "freelance", "contractor"};
+        if (lower.contains("linkedin") || lower.contains(" at ") || lower.contains(" bei ") || lower.contains("student") || lower.contains("intern") || lower.contains("freelance") || lower.contains("contractor") || lower.contains("department") || lower.contains("shipping") || lower.contains("logistics") || lower.contains("operations") || lower.contains("manager") || lower.contains("assistant") || lower.contains("support") || lower.contains(",")) {
+            return false;
+        }
+
+        String[] roleKeywords = {
+                "developer", "engineer", "designer", "manager", "consultant", "director", "founder", "owner", "lead", "analyst", "architect",
+                "president", "chief", "cto", "ceo", "cfo", "coo", "vp", "vice", "principal", "teacher", "speaker", "coach",
+                "assistant", "support", "specialist", "sales", "marketing", "service", "shipping", "logistics", "operations",
+                "human resources", "researcher", "trainer", "technician", "administrator", "representative", "account", "auditor", "executive"
+        };
         for (String keyword : roleKeywords) {
-            if (lower.contains(keyword)) return false;
+            if (lower.contains(" " + keyword) || lower.startsWith(keyword) || lower.endsWith(" " + keyword) || lower.contains(keyword + " ")) {
+                return false;
+            }
         }
         return true;
     }

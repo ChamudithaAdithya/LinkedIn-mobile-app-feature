@@ -23,6 +23,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Optional;
 
 @Component
 public class ProxycurlClient {
@@ -32,7 +33,6 @@ public class ProxycurlClient {
     private final RestTemplate restTemplate;
     private final ProxycurlConfig proxycurlConfig;
     private final String apiUrl;
-    private final String fallbackApiUrl;
     
     @Autowired
     public ProxycurlClient(ProxycurlConfig proxycurlConfig) {
@@ -42,7 +42,6 @@ public class ProxycurlClient {
         
         this.proxycurlConfig = proxycurlConfig;
         this.apiUrl = proxycurlConfig.getApiUrl();
-        this.fallbackApiUrl = proxycurlConfig.getFallbackApiUrl();
         this.restTemplate = new RestTemplate(requestFactory);
     }
 
@@ -55,153 +54,86 @@ public class ProxycurlClient {
     public String enrichCandidate(CandidateDto candidate) {
         String apiKey = proxycurlConfig.getApiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            return "Proxycurl API key not configured; skipping enrichment";
+            String msg = "Proxycurl API key not configured; skipping enrichment";
+            LOGGER.debug("{} for {}", msg, candidate.getLinkedinUrl());
+            return msg;
+        }
+
+        String normalizedName = normalizeMissingValue(candidate.getName());
+        String firstName = getFirstName(normalizedName);
+        String lastName = getLastName(normalizedName);
+        String companyName = normalizeMissingValue(candidate.getCompany());
+
+        if (firstName == null || firstName.isBlank()) {
+            String msg = "Skipping NinjaPear enrichment: no valid first name for " + candidate.getLinkedinUrl();
+            LOGGER.debug(msg);
+            return msg;
+        }
+
+        if (companyName == null || !isLikelyCompanyName(companyName)) {
+            String msg = String.format("Skipping NinjaPear enrichment: invalid or missing company '%s' for %s", candidate.getCompany(), candidate.getLinkedinUrl());
+            LOGGER.debug(msg);
+            return msg;
         }
 
         try {
-            if (isLegacyProxycurlUrl()) {
-                boolean ok = enrichWithProxycurl(candidate, apiKey);
-                return ok ? "Enriched with legacy Proxycurl endpoint" : "Proxycurl enrichment returned no data";
-            } else {
-                boolean ok = enrichWithNinjaPear(candidate, apiKey);
-                if (ok) return "Enriched with NinjaPear";
-                
-                if (fallbackApiUrl != null && !fallbackApiUrl.isBlank()) {
-                    String url = UriComponentsBuilder.fromHttpUrl(fallbackApiUrl)
-                            .queryParam("linkedin_url", candidate.getLinkedinUrl())
-                            .queryParam("use_cache", "if-present")
-                            .build().toUriString();
-                    boolean ok2 = enrichCandidateFromUrl(candidate, apiKey, url, null);
-                    return ok2 ? "Enriched with fallback provider" : "Fallback returned no data";
-                }
-                return "NinjaPear enrichment did not return details";
+            String website = getDomain(companyName, apiKey);
+            if (website == null || website.isBlank()) {
+                String msg = "Company website not found for " + companyName;
+                LOGGER.debug(msg);
+                return msg;
             }
+            candidate.setCompanyWebsite(website);
+
+            String domain = extractDomain(website);
+            if (domain == null || domain.isBlank()) {
+                String msg = "Could not extract domain from company website " + website;
+                LOGGER.debug(msg);
+                return msg;
+            }
+
+            String workEmail = getWorkEmail(firstName, lastName, domain, apiKey);
+            if (workEmail == null || workEmail.isBlank()) {
+                String msg = "Email not found for " + firstName + " at " + domain;
+                LOGGER.debug(msg);
+                return msg;
+            }
+            candidate.setEmail(workEmail);
+
+            boolean profileFilled = populateProfileDetails(candidate, workEmail, apiKey);
+            if (profileFilled) {
+                return "Enriched with NinjaPear profile details";
+            }
+            return "Profile details not found for " + workEmail;
         } catch (HttpClientErrorException.TooManyRequests e) {
             String msg = "Enrichment API Rate Limit Exceeded (HTTP 429). Please wait before enriching more contacts.";
             LOGGER.error(msg);
             return msg;
         } catch (RestClientResponseException e) {
-            String msg = String.format("Failed to enrich candidate from Proxycurl: status=%d response=%s", e.getRawStatusCode(), getSafeResponseBody(e));
+            String msg = String.format("Failed to enrich candidate from NinjaPear: status=%d response=%s", e.getRawStatusCode(), getSafeResponseBody(e));
             LOGGER.error(msg, e);
-            // Re-throw 5xx errors so Spring Retry catches them
             if (e.getStatusCode().is5xxServerError()) {
                 throw new HttpServerErrorException(e.getStatusCode(), e.getStatusText(), e.getResponseHeaders(), e.getResponseBodyAsByteArray(), null);
             }
             return msg;
         } catch (ResourceAccessException e) {
-            LOGGER.error("Network timeout connecting to Enrichment API", e);
-            throw e; // Triggers @Retryable
+            LOGGER.error("Network timeout connecting to NinjaPear API", e);
+            throw e;
         } catch (Exception e) {
-            String msg = "Failed to enrich candidate from Proxycurl: " + e.getMessage();
+            String msg = "Failed to enrich candidate from NinjaPear: " + e.getMessage();
             LOGGER.error(msg, e);
             return msg;
         }
     }
     
-    private boolean isLegacyProxycurlUrl() {
-        return apiUrl != null && apiUrl.contains("/proxycurl/");
-    }
-
-    private boolean enrichWithProxycurl(CandidateDto candidate, String apiKey) {
-        String url = UriComponentsBuilder.fromHttpUrl(apiUrl)
-                .queryParam("url", candidate.getLinkedinUrl())
-                .queryParam("fallback_to_cache", "on-error")
+    private String getDomain(String companyName, String apiKey) {
+        String url = UriComponentsBuilder.fromHttpUrl(getApiHost())
+                .path("/api/v1/company/website")
+                .queryParam("company_name", companyName)
                 .queryParam("use_cache", "if-present")
                 .build()
                 .toUriString();
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + apiKey);
-        HttpEntity<String> entity = new HttpEntity<>(headers);
-
-        ResponseEntity<JsonNode> response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
-        JsonNode body = response.getBody();
-
-        if (body != null && !body.isEmpty()) {
-            candidate.setProfilePicUrl(body.path("profile_pic_url").asText(null));
-            candidate.setHeadline(body.path("headline").asText(candidate.getTitle()));
-            candidate.setSummary(body.path("summary").asText(null));
-
-            String city = body.path("city").asText("");
-            String country = body.path("country").asText("");
-            if (!city.isEmpty() || !country.isEmpty()) {
-                candidate.setLocation(city + (city.isEmpty() || country.isEmpty() ? "" : ", ") + country);
-            }
-
-            String fullName = body.path("full_name").asText(null);
-            if (fullName != null && !fullName.isBlank()) {
-                candidate.setName(fullName);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    private boolean enrichWithNinjaPear(CandidateDto candidate, String apiKey) {
-        String normalizedName = normalizeMissingValue(candidate.getName());
-        String firstName = getFirstName(normalizedName);
-        String lastName = getLastName(normalizedName);
-        String company = normalizeMissingValue(candidate.getCompany());
-
-        LOGGER.debug("Starting NinjaPear enrichment for candidate: name='{}', firstName='{}', company='{}'", normalizedName, firstName, company);
-
-        if (firstName == null || firstName.isBlank()) {
-            LOGGER.debug("Insufficient data to enrich candidate; name='{}'", candidate.getName());
-            return false;
-        }
-
-        boolean enriched = false;
-
-        // Prefer employer website flow which the API accepts (first_name + employer_website)
-        if (company != null && !company.isBlank()) {
-            String employerWebsite = resolveCompanyWebsite(company, apiKey);
-            if (employerWebsite != null && !employerWebsite.isBlank()) {
-                enriched = enrichWithNinjaPearByEmployerWebsite(candidate, apiKey, firstName, lastName, employerWebsite);
-            } else {
-                // If we could not resolve the employer website (for example insufficient credits),
-                // the provider requires employer_website or work_email. Do not attempt the linkedin_url
-                // fallback because the API returns 400 for linkedin-only requests.
-                LOGGER.debug("Could not resolve website for company '{}'; skipping LinkedIn fallback for {}", company, candidate.getLinkedinUrl());
-                LOGGER.debug("NinjaPear enrichment did not return details for {}", candidate.getLinkedinUrl());
-                return false;
-            }
-        } else {
-            // No company provided. The API requires work_email or employer_website+first_name.
-            // We don't have a work_email at this point, so skip attempting a linkedin-only request.
-            LOGGER.debug("No company or work email available for {}; skipping NinjaPear enrichment", candidate.getLinkedinUrl());
-            return false;
-        }
-
-        if (!enriched) {
-            LOGGER.debug("NinjaPear enrichment did not return details for {}", candidate.getLinkedinUrl());
-        }
-
-        return enriched;
-    }
-
-    private boolean enrichWithNinjaPearByEmployerWebsite(CandidateDto candidate, String apiKey, String firstName, String lastName, String employerWebsite) {
-        String url = UriComponentsBuilder.fromHttpUrl(apiUrl)
-                .queryParam("first_name", firstName)
-                .queryParam("employer_website", employerWebsite)
-                .queryParam("use_cache", "if-present")
-                .queryParamIfPresent("last_name", lastName == null || lastName.isBlank() ? java.util.Optional.empty() : java.util.Optional.of(lastName))
-                .build()
-                .toUriString();
-
-        return enrichCandidateFromUrl(candidate, apiKey, url, employerWebsite);
-    }
-
-    private boolean enrichWithNinjaPearByLinkedIn(CandidateDto candidate, String apiKey) {
-        String url = UriComponentsBuilder.fromHttpUrl(apiUrl)
-                .queryParam("linkedin_url", candidate.getLinkedinUrl())
-                .queryParam("use_cache", "if-present")
-                .build()
-                .toUriString();
-
-        return enrichCandidateFromUrl(candidate, apiKey, url, null);
-    }
-
-    private boolean enrichCandidateFromUrl(CandidateDto candidate, String apiKey, String url, String employerWebsite) {
         HttpHeaders headers = new HttpHeaders();
         headers.set("Authorization", "Bearer " + apiKey);
         HttpEntity<String> entity = new HttpEntity<>(headers);
@@ -209,15 +141,71 @@ public class ProxycurlClient {
         try {
             ResponseEntity<JsonNode> response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
             JsonNode body = response.getBody();
-            if (body != null) {
-                LOGGER.debug("Raw Proxycurl response: {}", body.toString());
+            String website = firstNonEmpty(body, "website", "domain", "company_website", "company_url");
+            return website;
+        } catch (RestClientResponseException e) {
+            if (e.getRawStatusCode() == 403) {
+                LOGGER.debug("Company website lookup failed for '{}': Out of credits. {}", companyName, getSafeResponseBody(e));
+            } else if (e.getRawStatusCode() == 404) {
+                LOGGER.debug("Company website lookup failed for '{}': Company not found. {}", companyName, getSafeResponseBody(e));
+            } else {
+                LOGGER.debug("Company website lookup failed for '{}': status={} response={}", companyName, e.getRawStatusCode(), getSafeResponseBody(e));
             }
-            JsonNode profile = unwrapProfileNode(body);
+            return null;
+        }
+    }
+
+    private String getWorkEmail(String firstName, String lastName, String domain, String apiKey) {
+        if (firstName == null || firstName.isBlank() || domain == null || domain.isBlank()) {
+            return null;
+        }
+
+        String url = UriComponentsBuilder.fromHttpUrl(getApiHost())
+                .path("/api/v1/employee/work-email")
+                .queryParam("first_name", firstName)
+                .queryParamIfPresent("last_name", lastName == null || lastName.isBlank() ? Optional.empty() : Optional.of(lastName))
+                .queryParam("domain", domain)
+                .queryParam("use_cache", "if-present")
+                .build()
+                .toUriString();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + apiKey);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        try {
+            ResponseEntity<JsonNode> response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
+            JsonNode body = response.getBody();
+            if (body == null) {
+                return null;
+            }
+            String email = firstNonEmpty(body, "work_email", "email");
+            return email;
+        } catch (RestClientResponseException e) {
+            LOGGER.debug("Work email lookup failed for '{} {}' domain='{}': status={} response={}", firstName, lastName, domain, e.getRawStatusCode(), getSafeResponseBody(e));
+            return null;
+        }
+    }
+
+    private boolean populateProfileDetails(CandidateDto candidate, String workEmail, String apiKey) {
+        String url = UriComponentsBuilder.fromHttpUrl(getApiHost())
+                .path("/api/v1/employee/profile")
+                .queryParam("work_email", workEmail)
+                .queryParam("use_cache", "if-present")
+                .build()
+                .toUriString();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + apiKey);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        try {
+            ResponseEntity<JsonNode> response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
+            JsonNode profile = unwrapProfileNode(response.getBody());
             if (profile == null || profile.isEmpty()) {
-                LOGGER.debug("Profile node is null or empty after unwrapping for {}", candidate.getLinkedinUrl());
+                LOGGER.debug("Profile details not found for work_email={}", workEmail);
                 return false;
             }
-            LOGGER.debug("Unwrapped profile for {}: {}", candidate.getLinkedinUrl(), profile.toString());
 
             candidate.setProfilePicUrl(firstNonEmpty(profile, "profile_pic_url", "profile_pic", "image", "avatar", "photo"));
             candidate.setHeadline(firstNonEmpty(profile, "job_title", "headline", "title", "position", "role", "current_title", "current_position"));
@@ -230,10 +218,13 @@ public class ProxycurlClient {
             candidate.setSocialProfileUrl(firstNonEmpty(profile, "x_profile_url", "social_profile_url", "linkedin_url", "profile_url"));
 
             String companyWebsite = firstNonEmpty(profile, "employer_website", "company_website", "company_url");
-            if (employerWebsite != null && !employerWebsite.isBlank()) {
-                candidate.setCompanyWebsite(employerWebsite);
-            } else if (companyWebsite != null && !companyWebsite.isBlank()) {
+            if (companyWebsite != null && !companyWebsite.isBlank()) {
                 candidate.setCompanyWebsite(companyWebsite);
+            }
+
+            String companyName = firstNonEmpty(profile, "company", "employer", "current_employer", "current_company", "organization", "employer_name", "company_name");
+            if (companyName != null && !companyName.isBlank()) {
+                candidate.setCompany(companyName);
             }
 
             String city = firstNonEmpty(profile, "city", "location_city", "locality");
@@ -258,26 +249,16 @@ public class ProxycurlClient {
                 candidate.setPhone(phone);
             }
 
-            if ((candidate.getEmail() == null || candidate.getEmail().isBlank()) && candidate.getCompanyWebsite() != null) {
-                String resolvedDomain = extractDomain(candidate.getCompanyWebsite());
-                if (resolvedDomain != null && !resolvedDomain.isBlank()) {
-                    String workEmail = resolveWorkEmail(getFirstName(candidate.getName()), getLastName(candidate.getName()), resolvedDomain, apiKey);
-                    if (workEmail != null && !workEmail.isBlank()) {
-                        candidate.setEmail(workEmail);
-                    }
-                }
-            }
-
             return true;
         } catch (RestClientResponseException e) {
-            LOGGER.debug("NinjaPear request failed for {}: status={} response={}", candidate.getLinkedinUrl(), e.getRawStatusCode(), getSafeResponseBody(e));
+            LOGGER.debug("Profile enrichment failed for work_email={} status={} response={}", workEmail, e.getRawStatusCode(), getSafeResponseBody(e));
             return false;
         }
     }
 
     private JsonNode unwrapProfileNode(JsonNode body) {
         if (body == null || body.isNull()) {
-            return body;
+            return null;
         }
         if (body.has("data") && body.get("data").isObject()) {
             return body.get("data");
@@ -301,27 +282,29 @@ public class ProxycurlClient {
         return null;
     }
 
-    private String resolveCompanyWebsite(String company, String apiKey) {
-        String websiteLookupUrl = UriComponentsBuilder.fromHttpUrl(getApiHost())
-                .path("/api/v1/company/website")
-                .queryParam("company_name", company)
-                .queryParam("use_cache", "if-present")
-                .build()
-                .toUriString();
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + apiKey);
-        HttpEntity<String> entity = new HttpEntity<>(headers);
-
-        try {
-            ResponseEntity<JsonNode> response = restTemplate.exchange(websiteLookupUrl, HttpMethod.GET, entity, JsonNode.class);
-            JsonNode body = response.getBody();
-            String website = body != null ? body.path("website").asText(null) : null;
-            return website == null || website.isBlank() ? null : website;
-        } catch (RestClientResponseException e) {
-            LOGGER.debug("Company website lookup failed for '{}': status={} response={} ", company, e.getRawStatusCode(), getSafeResponseBody(e));
-            return null;
+    private boolean isLikelyCompanyName(String company) {
+        if (company == null) {
+            return false;
         }
+        String normalized = company.trim().toLowerCase();
+        if (normalized.isBlank()) {
+            return false;
+        }
+        if (normalized.contains("linkedin") || normalized.contains(" at ") || normalized.contains(" bei ") || normalized.contains("student") || normalized.contains("intern") || normalized.contains("freelance") || normalized.contains("contractor") || normalized.contains("agency") || normalized.contains("department") || normalized.contains(" team") || normalized.contains(" team ")) {
+            return false;
+        }
+        String[] roleKeywords = {
+                "developer", "engineer", "designer", "manager", "consultant", "director", "founder", "owner", "lead", "analyst", "architect",
+                "president", "chief", "cto", "ceo", "cfo", "coo", "vp", "vice", "principal", "teacher", "speaker", "coach",
+                "assistant", "support", "specialist", "sales", "marketing", "service", "shipping", "logistics", "operations",
+                "human resources", "researcher", "trainer", "technician", "administrator", "representative", "account", "auditor", "executive"
+        };
+        for (String keyword : roleKeywords) {
+            if (normalized.contains(" " + keyword) || normalized.startsWith(keyword) || normalized.endsWith(" " + keyword) || normalized.contains(keyword + " ")) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String getApiHost() {
@@ -339,41 +322,6 @@ public class ProxycurlClient {
             return scheme + "://" + host;
         } catch (URISyntaxException e) {
             return "https://nubela.co";
-        }
-    }
-
-    private String resolveWorkEmail(String firstName, String lastName, String domain, String apiKey) {
-        if (firstName == null || firstName.isBlank() || domain == null || domain.isBlank()) {
-            return null;
-        }
-
-        String url = UriComponentsBuilder.fromHttpUrl(getApiHost())
-                .path("/api/v1/employee/work-email")
-                .queryParam("first_name", firstName)
-                .queryParam("domain", domain)
-                .queryParamIfPresent("last_name", lastName == null || lastName.isBlank() ? java.util.Optional.empty() : java.util.Optional.of(lastName))
-                .queryParam("use_cache", "if-present")
-                .build()
-                .toUriString();
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + apiKey);
-        HttpEntity<String> entity = new HttpEntity<>(headers);
-
-        try {
-            ResponseEntity<JsonNode> response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
-            JsonNode body = response.getBody();
-            if (body == null) {
-                return null;
-            }
-            String email = body.path("work_email").asText(null);
-            if (email == null || email.isBlank()) {
-                email = body.path("email").asText(null);
-            }
-            return email;
-        } catch (RestClientResponseException e) {
-            LOGGER.debug("Work email lookup failed for '{} {}' domain='{}': status={} response={}", firstName, lastName, domain, e.getRawStatusCode(), getSafeResponseBody(e));
-            return null;
         }
     }
 

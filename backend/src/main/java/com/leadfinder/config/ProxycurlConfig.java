@@ -9,7 +9,7 @@ public class ProxycurlConfig {
     @Value("${proxycurl.api.key:}")
     private String apiKey;
 
-    @Value("${proxycurl.api.url:https://nubela.co/api/v1/employee/profile}")
+    @Value("${proxycurl.api.url:https://nubela.co}")
     private String apiUrl;
 
     @Value("${proxycurl.fallback.api.url:}")
